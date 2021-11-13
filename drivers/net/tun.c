@@ -3421,6 +3421,59 @@ static void tun_chr_show_fdinfo(struct seq_file *m, struct file *file)
 }
 #endif
 
+static ssize_t tun_sendpage(struct file *file, struct page *page, int offset,
+			    size_t size, loff_t *ppos, int more)
+{
+	ssize_t rt;
+	int noblock = 0;
+	struct tun_file *tfile = file->private_data;
+	struct tun_struct *tun = tun_get(tfile);
+	struct kvec iov;
+	struct iov_iter from;
+
+	// validate the tun object
+	if (!tun)
+		return -EBADFD;
+
+	// extract the flags
+	if ((file->f_flags & O_NONBLOCK))
+		noblock = 1;
+
+	// build iov_iter
+	iov.iov_base = kmap(page) + offset;
+	iov.iov_len = size;
+	iov_iter_kvec(&from, WRITE, &iov, 1, size);
+
+	// process data
+	rt = tun_get_user(tun, tfile, NULL, &from, noblock, more);
+	
+	kunmap(page);
+	tun_put(tun);
+	return rt;
+}
+
+static ssize_t tun_splice_write(struct pipe_inode_info *pipe, struct file *out,
+					loff_t *ppos, size_t len, unsigned int flags)
+{
+	// validate the read_iter
+	if (!likely(out->f_op->sendpage))
+		return -EINVAL;
+
+	return generic_splice_sendpage(pipe, out, ppos, len, flags);
+}
+
+static ssize_t tun_splice_read(struct file *in, loff_t *ppos,
+					struct pipe_inode_info *pipe, size_t len,
+					unsigned int flags)
+{
+	// validate the read_iter
+	if (!likely(in->f_op->read_iter))
+		return -EINVAL;
+	
+	// perform read
+	return generic_file_splice_read(in, ppos, pipe, len, flags);
+}
+
 static const struct file_operations tun_fops = {
 	.owner	= THIS_MODULE,
 	.llseek = no_llseek,
@@ -3437,6 +3490,11 @@ static const struct file_operations tun_fops = {
 #ifdef CONFIG_PROC_FS
 	.show_fdinfo = tun_chr_show_fdinfo,
 #endif
+		
+	// splice and sendpage
+	.sendpage = tun_sendpage,
+	.splice_write = tun_splice_write,
+	.splice_read = tun_splice_read,
 };
 
 static struct miscdevice tun_miscdev = {
