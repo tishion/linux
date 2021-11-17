@@ -1800,6 +1800,14 @@ drop:
 				pi.proto = htons(ETH_P_IPV6);
 				break;
 			default:
+			#if DEBUG
+				pr_devel("invalid ip version: %d, skb data:", ip_version);
+				for (int i = 0; i < min_t(u8, skb->len, 32); i++) {
+					pr_cont("%0x02x ", skb->data[i]);
+					if (i + 1 % 16 == 0)
+						pr_count("\n"); 
+				}
+			#endif
 				atomic_long_inc(&tun->dev->rx_dropped);
 				kfree_skb(skb);
 				return -EINVAL;
