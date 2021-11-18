@@ -25,6 +25,7 @@
  *    Modifications for 2.3.99-pre5 kernel.
  */
 
+#define DEBUG 1
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DRV_NAME	"tun"
@@ -1661,6 +1662,7 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 	u32 rxhash = 0;
 	int skb_xdp = 1;
 	bool frags = tun_napi_frags_enabled(tfile);
+	int i = 0;
 
 	if (!(tun->flags & IFF_NO_PI)) {
 		if (len < sizeof(pi))
@@ -1801,11 +1803,12 @@ drop:
 				break;
 			default:
 			#if DEBUG
-				pr_devel("invalid ip version: %d, skb data:", ip_version);
-				for (int i = 0; i < min_t(u8, skb->len, 32); i++) {
-					pr_cont("%0x02x ", skb->data[i]);
-					if (i + 1 % 16 == 0)
-						pr_count("\n"); 
+				pr_devel("invalid ip version: %d", ip_version);
+				pr_devel("======= skb buffer data ======= \n");
+				for (i = 0; i < min_t(ssize_t, skb->len, 32); i++) {
+					pr_cont("0x%02x ", skb->data[i]);
+					if ((i + 1) % 16 == 0)
+						pr_cont("\n"); 
 				}
 			#endif
 				atomic_long_inc(&tun->dev->rx_dropped);
@@ -3436,8 +3439,11 @@ static ssize_t tun_sendpage(struct file *file, struct page *page, int offset,
 	int noblock = 0;
 	struct tun_file *tfile = file->private_data;
 	struct tun_struct *tun = tun_get(tfile);
-	struct kvec iov;
+	struct kvec kiov;
 	struct iov_iter from;
+
+	int i = 0;
+	unsigned char *p = 0;
 
 	// validate the tun object
 	if (!tun)
@@ -3448,9 +3454,19 @@ static ssize_t tun_sendpage(struct file *file, struct page *page, int offset,
 		noblock = 1;
 
 	// build iov_iter
-	iov.iov_base = kmap(page) + offset;
-	iov.iov_len = size;
-	iov_iter_kvec(&from, WRITE, &iov, 1, size);
+	kiov.iov_base = kmap(page) + offset;
+	kiov.iov_len = size;
+	iov_iter_kvec(&from, WRITE, &kiov, 1, size);
+
+#if DEBUG
+	pr_devel("======= from buffer data ======= \n");
+	p = (unsigned char*)kiov.iov_base;
+	for (i = 0; i < min_t(ssize_t, size, 32); i++) {
+		pr_cont("0x%02x ", p[i]);
+		if ((i + 1) % 16 == 0)
+			pr_cont("\n"); 
+	}
+#endif
 
 	// process data
 	rt = tun_get_user(tun, tfile, NULL, &from, noblock, more);
@@ -3458,16 +3474,6 @@ static ssize_t tun_sendpage(struct file *file, struct page *page, int offset,
 	kunmap(page);
 	tun_put(tun);
 	return rt;
-}
-
-static ssize_t tun_splice_write(struct pipe_inode_info *pipe, struct file *out,
-					loff_t *ppos, size_t len, unsigned int flags)
-{
-	// validate the read_iter
-	if (!likely(out->f_op->sendpage))
-		return -EINVAL;
-
-	return generic_splice_sendpage(pipe, out, ppos, len, flags);
 }
 
 static ssize_t tun_splice_read(struct file *in, loff_t *ppos,
@@ -3501,7 +3507,7 @@ static const struct file_operations tun_fops = {
 		
 	// splice and sendpage
 	.sendpage = tun_sendpage,
-	.splice_write = tun_splice_write,
+	.splice_write = generic_splice_sendpage,
 	.splice_read = tun_splice_read,
 };
 
